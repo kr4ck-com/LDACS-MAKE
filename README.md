@@ -13,13 +13,13 @@ Dobleblind - TBA
 
 ## **File structure:**
 
-- `ldacs_auth_gsc_as.spthy`
+- `ldacs_make.spthy`
 
   - contains a formal analysis of the proposed mutual authentication and key agreement protocols of LDACS and to prove their security.
   
 - `tamarin.png`
 
-  - contains a grpahical output of the proof of MAKE protocol 
+  - contains a graphical output of the proof of MAKE protocol 
   
 
 ## The Tamarin prover repository
@@ -30,11 +30,11 @@ https://tamarin-prover.github.io/manual/book/002_installation.html
 
 ## Build environment
 
-Tamarin prover: v1.4.1
+Tamarin prover: v1.6.0
 
 OS: Linux based Ubuntu 18.04 Laptop
 
 Configuration: Intel(R) Core(TM) i7-8650U CPU 16GB of RAM
 
-Verification time: 20.158s  
+Verification time: 36.159s  
 
