@@ -1,0 +1,209 @@
+///////////////////////////////////////////////////////
+//
+//  LDACS MAKE Protocol Model
+//
+//
+//  (c)DoubleBild - TBA. 2020
+//  DoubleBild - TBA
+//
+///////////////////////////////////////////////////////
+
+theory ldacs_make
+begin
+
+builtins: diffie-hellman, symmetric-encryption, signing
+
+functions: kdf/1
+
+/////////////////////////////////////
+// Public key infrastructure (PKI)
+////////////////////////////////////
+
+// Anyone can register at any time a public key together with its ID
+// But: only once per ID
+rule Register_pk:
+  [ Fr(~ltkX) ]
+  --[ OnlyOnceV($X) ]->
+  [
+    !Ltk($X, ~ltkX)
+    , !Pk($X, pk(~ltkX))
+    , Out(pk(~ltkX)) 
+  ] 
+
+/////////////////////////////////////
+// Attacker
+//////////////
+
+// Compromising an agent's long-term key
+rule Reveal_ltk:
+  [ !Ltk($X, ltkX) ] --[ Reveal($X) ]-> [ Out(ltkX) ]
+
+// Leaking an agent's session key
+rule Leak_session: 
+   [ !Sessk(s, k) ] --[ Leaked(k) ]-> [ Out(k) ]
+
+
+/////////////////////
+// GS
+////////////
+
+rule GS_0:
+    [ 
+        Fr(~id) //GS session id
+        , !Ltk($GS, ltkGS) //get own private key
+    ]
+    --[ CreateGSC($GS, ~id) ]->
+    [ 
+        S_GSC_0($GS, ~id, ltkGS)
+        , Out(<'Broadcast', $GS>) //broadcast beacon
+    ]
+
+rule GS_1:
+    let tgs = 'g'^~x 
+    in
+    [
+        S_GSC_0(GS, id, ltkGS)
+        , In(<'CellEntryRequest', AS>)
+        , Fr(~x)
+    ]
+    --[ Running(GS, AS, id, tgs) ]->
+    [
+        Out(<'ServerHelloKeyExchange', GS, tgs>) 
+        , S_GSC_1(GS, id, ltkGS, AS, ~x, tgs)
+    ]
+
+rule GS_2:
+    let Sag = tas^x
+        Kag = kdf(Sag)
+    in
+    [   S_GSC_1(GS, id, ltkGS, AS, x, tgs)
+        , In(<'ClientHelloKeyExchange', tas, sign{tas, tgs, AS, GS}ltkAS>)
+        , Fr(~ngs)
+        , !Pk(AS, pk(ltkAS)) 
+    ]     
+    --[ Knows(GS, id, Kag, AS) ]->
+    [ 
+        S_GSC_2(GS, id, ltkGS, AS, Sag, ~ngs, tgs, tas, Kag)
+        ,Out(<'ServerKeyExchangeFinished', ~ngs, sign{~ngs, tgs, tas, GS, AS}ltkGS>)
+    ]
+
+rule GSC_3:
+    [
+        S_GSC_2(GS, id, ltkGS, AS, Sag, ngs, tgs, tas, Kag)
+        , In(<'ClientKeyExchangeFinished', senc{ngsc}Kag>) 
+    ]
+    --[ Commit(GS, AS, id, <tgs, tas>), Secret(Kag), Honest(GS), Honest(AS) ]->
+    [ !Sessk(id, Kag) ]
+    
+////////////////////
+// AS
+////////////
+
+rule AS_0:
+    [ 
+        Fr(~id) //AS session id
+        , !Ltk($AS, ltkAS)
+    ]
+    --[ CreateAS($AS, ~id) ]->
+    [ 
+        S_AS_0($AS, ~id, ltkAS) 
+    ]
+
+rule AS_1:
+    [   
+        S_AS_0(AS, id, ltkAS)
+        , In(<'Broadcast', GS>)
+    ]
+    --[ Attaching(AS, GS, id) ]->
+    [
+        Out(<'CellEntryRequest', AS>)
+        , S_AS_1(AS, GS, id, ltkAS)
+    ]
+
+rule AS_2:
+    let tas = 'g'^~y
+        Sag = tgs^~y
+        Kag = kdf(Sag)
+    in
+    [   
+        S_AS_1(AS, GS, id, ltkAS)
+        , In(<'ServerHelloKeyExchange', GS, tgs>)
+        , Fr(~y)
+    ]
+    --[ Running(AS, GS, id, tas) ]-> 
+    [ 
+        Out(<'ClientHelloKeyExchange', tas, sign{tas, tgs, AS, GS}ltkAS>)
+        , S_AS_2(AS, id, ltkAS, tas, tgs, ~y, GS, Sag, Kag)
+    ]
+
+rule AS_3:
+    [   S_AS_2(AS, id, ltkAS, tas, tgs, y, GS, Sag, Kag)  
+        , In(<'ServerKeyExchangeFinished', ngs, sign{ngsc, tgs, tas, GS, AS}ltkGS>)        
+        , !Pk(GS, pk(ltkGS))
+    ]
+    --[ 
+        Commit(AS, GS, id, <tas, tgs>)
+        , Knows(AS, id, Kag, GS)
+        , Secret(Kag), Honest(AS), Honest(GS) 
+    ]->
+    [ Out(<'ClientKeyExchangeFinished', senc{ngs}Kag>), !Sessk(id, Kag) ]
+
+/////////////////////////////////////////////////////////////////////////////
+
+// rules which contain the OnlyOnceV(x)-event will be executed only once per x
+restriction OnlyOnceV:
+  "All #i #j x. OnlyOnceV(x)@#i & OnlyOnceV(x)@#j ==> #i = #j"
+
+
+// verify that the protocol runs through
+lemma executable:
+     exists-trace
+    "Ex A B ia ib x y #i #j #k #l #m #n #o. 
+        CreateAS(A, ia)@i & CreateGSC(B, ib)@j & Attaching(A, B, ia)@k
+            & Running(A, B, ia, x)@l & Running(B, A, ib, y)@m 
+            & Commit(B, A, ib, <y, x>)@n & Commit(A, B, ia, <x, y>)@o"
+
+
+// Perfect Forward Secrecy:
+// whenever a secret action Secret(x) occurs at timepoint i, 
+// the adversary does not know x 
+// or an agent claimed to be honest at time point i 
+// has been compromised at a timepoint r before
+// -> the point is: he needs to be compromised *before* 
+// -> if he was compromised *later* all older secrets still remain secret
+lemma secrecy:
+    "All x #i. 
+        Secret(x)@i ==> 
+            not (Ex #j. K(x)@j)
+            | (Ex #u. Leaked(x)@u)
+            | (Ex B #r. Reveal(B)@r & Honest(B)@i & #r<#i)"
+
+
+
+// If A finishes a run with B by exchanging y at time i
+// he can be sure, B also ran the protocol with A
+// and y has not been exchanged before in any other run (injective agreement)
+// the only exclusion is when a LTK has been compromised before
+lemma mutual_authentication:
+    "All A B x y ia #i. Commit(A, B, ia, <x, y>)@i ==> 
+            ( Ex ib #j. Running(B, A, ib, y)@j
+              & j<i
+              & not (Ex A2 B2 ia2 #i2. Commit(A2, B2, ia2, <x, y>)@i2 & not(#i2=#i))
+            )
+            | (Ex C #r. Reveal(C)@r & Honest(C)@i & #r<#i)"
+
+
+// If A finishes a run with B it can be sure, that: 
+// * it has a session key P, and
+// * B also has this key as a session key with A (mutual understanding)
+// * the key is fresh and has not been exchanged before with any other agent, 
+// -> except the private key of an honest agent has been corrupted before
+lemma secure_key_establishment:
+    "All A B ia x #i. Commit(A, B, ia, x)@i ==> 
+            ( Ex P ib #j #m. Knows(A, ia, P, B)@m & Knows(B, ib, P, A)@j
+              & not (Ex D E id #k. Knows(D, id, P, E)@k & not(#m=#k) & not(#j=#k))
+            )
+            | (Ex C #r. Reveal(C)@r & Honest(C)@i & #r<#i)" 
+ 
+
+end
